@@ -12,6 +12,7 @@ type Auth struct {
 }
 
 func NewAuth() *Auth {
+	os.MkdirAll("db/users/", os.ModePerm)
 	return &Auth{}
 }
 
@@ -22,7 +23,7 @@ func (a *Auth) Signup(req types.NewUserReq) error {
 		return err
 	}
 
-	f, err := os.OpenFile("db/users/"+req.Email, os.O_RDWR|os.O_CREATE, 0777)
+	f, err := os.OpenFile("db/users/"+req.Email, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return err
 	}

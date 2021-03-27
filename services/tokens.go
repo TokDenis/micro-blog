@@ -10,6 +10,7 @@ type Tokens struct {
 }
 
 func NewTokens() *Tokens {
+	os.MkdirAll("db/tokens/", os.ModePerm)
 	return &Tokens{}
 }
 

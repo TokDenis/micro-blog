@@ -8,31 +8,23 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
 type Post struct {
-	files     []int
-	timeIndex *PostIndex
-	stats     *Stats
+	lastPostId int
+	timeIndex  *PostIndex
+	stats      *Stats
 }
 
 func NewPost(stats *Stats) (*Post, error) {
 	dbPath := "db/posts/"
-	var files []int
+	os.MkdirAll(dbPath, os.ModePerm)
+	var filesCounter int
 
 	err := godirwalk.Walk(dbPath, &godirwalk.Options{
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			file := strings.Replace(osPathname, dbPath, "", 1)
-			if file != "" {
-				fileId, err := strconv.Atoi(file)
-				if err != nil {
-					log.Info().Err(err).Send()
-					return nil
-				}
-				files = append(files, fileId)
-			}
+			filesCounter++
 			return nil
 		},
 		Unsorted: true,
@@ -41,29 +33,28 @@ func NewPost(stats *Stats) (*Post, error) {
 		return nil, err
 	}
 
-	sort.Ints(files)
-
 	ind, err := NewPostIndex()
 	if err != nil {
 		return nil, err
 	}
 
+	log.Info().Msgf("last post %d", filesCounter-2)
+
 	return &Post{
-		files:     files,
-		stats:     stats,
-		timeIndex: ind,
+		lastPostId: filesCounter - 2,
+		stats:      stats,
+		timeIndex:  ind,
 	}, err
 }
 
 func (p *Post) CreatePost(req types.NewPostReq, user *types.UserInfo) (id int, err error) {
-	if len(p.files) != 0 {
-		id = p.files[len(p.files)-1] + 1
+	if p.lastPostId != 0 {
+		id = p.lastPostId + 1
 	} else {
 		id = 0
 	}
-	p.files = append(p.files, id)
 
-	f, err := os.OpenFile("db/posts/"+strconv.Itoa(id), os.O_RDWR|os.O_CREATE, 0777)
+	f, err := os.OpenFile("db/posts/"+strconv.Itoa(id), os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return -1, err
 	}
@@ -80,17 +71,25 @@ func (p *Post) CreatePost(req types.NewPostReq, user *types.UserInfo) (id int, e
 	}
 
 	b, err := json.Marshal(&post)
+	if err != nil {
+		return -1, err
+	}
 
-	f.Write(b)
+	_, err = f.Write(b)
+	if err != nil {
+		return -1, err
+	}
+
+	p.lastPostId++
 
 	err = p.timeIndex.Append(post.Id, post.Created)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	err = p.stats.CreateStats(id)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	return id, nil
@@ -133,19 +132,15 @@ func (p *Post) GetPosts(from, count int) (posts []*types.Post, err error) {
 }
 
 // last 5 posts
-func (p *Post) LastPosts() (posts []*types.Post, err error) {
-	var postsIds []int
-
-	if len(p.files) > 5 {
-		postsIds = p.files[len(p.files)-5:]
-	} else {
-		postsIds = p.files
-	}
-
-	for i := 0; i < len(postsIds); i++ {
-		post, err := p.ReadPost(postsIds[i])
+func (p *Post) LastPosts(page int) (posts []*types.Post, err error) {
+	fromPostId := p.lastPostId - page*5
+	for i := fromPostId; i > fromPostId-5; i-- {
+		post, err := p.ReadPost(i)
 		if err != nil {
 			return nil, err
+		}
+		if post == nil {
+			continue
 		}
 		posts = append(posts, post)
 	}
@@ -168,6 +163,9 @@ func (p *Post) PostsByDay(ts time.Time) (posts []*types.Post, err error) {
 }
 
 func (p *Post) ReadPost(id int) (*types.Post, error) {
+	if id < 0 {
+		return nil, nil
+	}
 	b, err := os.ReadFile("db/posts/" + strconv.Itoa(id))
 	if err != nil {
 		return nil, err
@@ -183,4 +181,8 @@ func (p *Post) ReadPost(id int) (*types.Post, error) {
 	p.stats.CountView(post.Id)
 
 	return &post, err
+}
+
+func (p *Post) PostsPages() int {
+	return p.lastPostId/5 + 1
 }

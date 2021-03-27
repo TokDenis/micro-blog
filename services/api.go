@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttprouter"
+	"io/fs"
 	"strconv"
 	"time"
 
@@ -20,6 +21,10 @@ type Api struct {
 	token *Tokens
 	stats *Stats
 }
+
+const (
+	TokenKey = "x-token"
+)
 
 func NewApi() (*Api, error) {
 	r := fasthttprouter.New()
@@ -63,6 +68,7 @@ func NewApi() (*Api, error) {
 	r.POST("/api/v1/auth/login", api.LoginUser)
 	r.GET("/api/v1/auth/userinfo", api.AuthMiddleware(api.UserInfo))
 
+	r.GET("/api/v1/post/pages", api.PostsPages)
 	r.GET("/api/v1/post/daytop", api.DayTopPosts)
 	r.GET("/api/v1/post/next", api.GetPosts)
 	r.GET("/api/v1/post/last", api.LastPosts)
@@ -97,22 +103,27 @@ func (a *Api) NewUser(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 			_, _ = ctx.Write([]byte(err.Error()))
 			return
 		}
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	token, err := a.token.MakeToken(newUserReq.Email)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		_, _ = ctx.Write([]byte(err.Error()))
 		return
 	}
 
 	ses := sessions.StartFasthttp(ctx)
-	ses.Set("x-tokent", token)
+	ses.Set(TokenKey, token)
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	//_, _ = ctx.Write([]byte(token))
+}
+
+func (a *Api) internalErr(ctx *fasthttp.RequestCtx, err error) {
+	log.Error().Err(err).Send()
+	ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 }
 
 func (a *Api) LoginUser(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
@@ -126,18 +137,24 @@ func (a *Api) LoginUser(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 
 	user, err := a.auth.Sigin(userReq.Email, userReq.Password)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if errors.Is(err, fs.ErrNotExist) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			return
+		}
+		a.internalErr(ctx, err)
 		return
 	}
 
 	token, err := a.token.MakeToken(user.Email)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
+	ses := sessions.StartFasthttp(ctx)
+	ses.Set(TokenKey, token)
+
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	_, _ = ctx.Write([]byte(token))
 }
 
 func (a *Api) UserInfo(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
@@ -145,13 +162,13 @@ func (a *Api) UserInfo(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 
 	user, err := a.auth.UserInfo(email)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&user)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -162,7 +179,7 @@ func (a *Api) UserInfo(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 func (a *Api) AuthMiddleware(next fasthttprouter.Handle) fasthttprouter.Handle {
 	return func(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
 		ses := sessions.StartFasthttp(ctx)
-		token, ok := ses.Get("x-tokent").(string)
+		token, ok := ses.Get(TokenKey).(string)
 		if !ok {
 			ctx.SetStatusCode(fasthttp.StatusUnauthorized)
 			return
@@ -179,15 +196,30 @@ func (a *Api) AuthMiddleware(next fasthttprouter.Handle) fasthttprouter.Handle {
 }
 
 func (a *Api) LastPosts(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
-	posts, err := a.post.LastPosts()
+	var page int
+	var err error
+
+	pageString := string(ctx.QueryArgs().Peek("page"))
+	if pageString != "" {
+		page, err = strconv.Atoi(pageString)
+		if err != nil {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			return
+		}
+		if page > 0 {
+			page--
+		}
+	}
+
+	posts, err := a.post.LastPosts(page)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&posts)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -204,13 +236,13 @@ func (a *Api) DayTopPosts(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 
 	posts, err := a.post.DayTop(ts)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&posts)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -233,13 +265,13 @@ func (a *Api) GetPosts(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 
 	posts, err := a.post.GetPosts(from, count)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&posts)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -256,13 +288,13 @@ func (a *Api) OpenPost(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
 
 	post, err := a.post.ReadPost(id)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&post)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -283,13 +315,13 @@ func (a *Api) NewPost(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 
 	userInfo, err := a.auth.UserInfo(email)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	id, err := a.post.CreatePost(postReq, userInfo)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
@@ -306,16 +338,23 @@ func (a *Api) ReadStats(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
 
 	stats, err := a.stats.ReadStats(id)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	b, err := json.Marshal(&stats)
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		a.internalErr(ctx, err)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	_, _ = ctx.Write(b)
+}
+
+func (a *Api) PostsPages(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
+	count := a.post.PostsPages()
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	_, _ = ctx.Write([]byte(strconv.Itoa(count)))
 }

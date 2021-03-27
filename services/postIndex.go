@@ -11,12 +11,12 @@ type PostIndex struct {
 }
 
 func NewPostIndex() (*PostIndex, error) {
-
+	os.MkdirAll("db/posts-index/bytime/", os.ModePerm)
 	return &PostIndex{}, nil
 }
 
 func (pt *PostIndex) Append(id int, ts time.Time) error {
-	f, err := os.OpenFile("db/posts-index/bytime/"+ts.Format("2006-01-02"), os.O_RDWR|os.O_CREATE, 0777)
+	f, err := os.OpenFile("db/posts-index/bytime/"+ts.Format("2006-01-02"), os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (pt *PostIndex) Append(id int, ts time.Time) error {
 }
 
 func (pt *PostIndex) PostsByDay(ts time.Time) (ids []int64, err error) {
-	f, err := os.OpenFile("db/posts-index/bytime/"+ts.Format("2006-01-02"), os.O_RDWR|os.O_CREATE, 0777)
+	f, err := os.OpenFile("db/posts-index/bytime/"+ts.Format("2006-01-02"), os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return nil, err
 	}

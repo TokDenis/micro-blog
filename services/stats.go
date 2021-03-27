@@ -15,6 +15,7 @@ type Stats struct {
 }
 
 func NewStats() *Stats {
+	os.MkdirAll("db/stats/", os.ModePerm)
 	s := Stats{
 		viewsChan: make(chan int, 1000),
 	}
@@ -24,7 +25,7 @@ func NewStats() *Stats {
 }
 
 func (s *Stats) CreateStats(postId int) error {
-	f, err := os.OpenFile("db/stats/"+strconv.Itoa(postId), os.O_RDWR|os.O_CREATE, 0777)
+	f, err := os.OpenFile("db/stats/"+strconv.Itoa(postId), os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -41,7 +42,7 @@ func (s *Stats) CreateStats(postId int) error {
 }
 
 func (s *Stats) addViews(postId, count int) error {
-	f, err := os.OpenFile("db/stats/"+strconv.Itoa(postId), os.O_RDWR, 0777)
+	f, err := os.OpenFile("db/stats/"+strconv.Itoa(postId), os.O_RDWR, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -85,22 +86,25 @@ func (s *Stats) CountView(postId int) {
 
 func (s *Stats) viewsCollector() {
 	viewsMap := make(map[int]int)
-	tic := time.NewTicker(time.Minute)
+	tic := time.NewTicker(time.Second)
+
+	go func() {
+		for {
+			select {
+			case <-tic.C:
+				for postId, count := range viewsMap {
+					err := s.addViews(postId, count)
+					if err != nil {
+						log.Error().Err(err).Send()
+					}
+					delete(viewsMap, postId)
+				}
+			}
+		}
+	}()
+
 	for postId := range s.viewsChan {
 		viewsMap[postId]++
-
-		select {
-		case <-tic.C:
-			for postId, count := range viewsMap {
-				err := s.addViews(postId, count)
-				if err != nil {
-					log.Error().Err(err).Send()
-				}
-				delete(viewsMap, postId)
-			}
-		default:
-
-		}
 	}
 }
 
