@@ -11,3 +11,8 @@ type NewUserReq struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
+
+type NewCommentReq struct {
+	PostId  int    `json:"post_id"`
+	Content string `json:"content"`
+}

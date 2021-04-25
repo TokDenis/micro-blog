@@ -8,6 +8,8 @@ import (
 
 var api *services.Api
 
+// todo https
+
 func main() {
 	os.Mkdir("db", os.ModePerm)
 	var err error
@@ -17,6 +19,8 @@ func main() {
 		log.Error().Err(err).Send()
 		return
 	}
+
+	go services.StartProxy()
 
 	select {}
 }

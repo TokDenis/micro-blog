@@ -12,9 +12,10 @@ import (
 )
 
 type Post struct {
-	lastPostId int
-	timeIndex  *PostIndex
-	stats      *Stats
+	postIds      []int
+	validPostIds []int
+	timeIndex    *PostIndex
+	stats        *Stats
 }
 
 func NewPost(stats *Stats) (*Post, error) {
@@ -24,6 +25,9 @@ func NewPost(stats *Stats) (*Post, error) {
 
 	err := godirwalk.Walk(dbPath, &godirwalk.Options{
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
+			if de.IsDir() {
+				return nil
+			}
 			filesCounter++
 			return nil
 		},
@@ -38,21 +42,40 @@ func NewPost(stats *Stats) (*Post, error) {
 		return nil, err
 	}
 
-	log.Info().Msgf("last post %d", filesCounter-2)
+	if filesCounter != 0 {
+		filesCounter -= 1
+	} else {
+		filesCounter = -1
+	}
 
-	return &Post{
-		lastPostId: filesCounter - 2,
-		stats:      stats,
-		timeIndex:  ind,
-	}, err
+	log.Info().Msgf("last post %d", filesCounter)
+
+	p := &Post{
+		stats:     stats,
+		timeIndex: ind,
+	}
+
+	var postIds []int
+
+	for i := 0; i <= filesCounter; i++ {
+		postIds = append(postIds, i)
+		post, err := p.ReadPost(i)
+		if err != nil {
+			return nil, err
+		}
+
+		if post.IsValid() {
+			p.addValidPost(i)
+		}
+	}
+
+	p.postIds = postIds
+
+	return p, err
 }
 
 func (p *Post) CreatePost(req types.NewPostReq, user *types.UserInfo) (id int, err error) {
-	if p.lastPostId != 0 {
-		id = p.lastPostId + 1
-	} else {
-		id = 0
-	}
+	id = p.postIds[len(p.postIds)-1] + 1
 
 	f, err := os.OpenFile("db/posts/"+strconv.Itoa(id), os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
@@ -80,7 +103,7 @@ func (p *Post) CreatePost(req types.NewPostReq, user *types.UserInfo) (id int, e
 		return -1, err
 	}
 
-	p.lastPostId++
+	p.postIds = append(p.postIds, id)
 
 	err = p.timeIndex.Append(post.Id, post.Created)
 	if err != nil {
@@ -131,18 +154,26 @@ func (p *Post) GetPosts(from, count int) (posts []*types.Post, err error) {
 	return posts, err
 }
 
-// last 5 posts
+// LastPosts last 5 posts
 func (p *Post) LastPosts(page int) (posts []*types.Post, err error) {
-	fromPostId := p.lastPostId - page*5
-	for i := fromPostId; i > fromPostId-5; i-- {
-		post, err := p.ReadPost(i)
+	fromPostId := len(p.validPostIds) - 1 - page*5
+	if fromPostId < 0 {
+		return nil, nil
+	}
+
+	for i := fromPostId; i >= 0; i-- {
+		post, err := p.ReadPost(p.validPostIds[i])
 		if err != nil {
 			return nil, err
 		}
 		if post == nil {
 			continue
 		}
+
 		posts = append(posts, post)
+		if len(posts) == 5 {
+			break
+		}
 	}
 	return posts, err
 }
@@ -157,6 +188,11 @@ func (p *Post) PostsByDay(ts time.Time) (posts []*types.Post, err error) {
 		if err != nil {
 			return nil, err
 		}
+
+		if !post.IsValid() {
+			continue
+		}
+
 		posts = append(posts, post)
 	}
 	return posts, err
@@ -184,5 +220,73 @@ func (p *Post) ReadPost(id int) (*types.Post, error) {
 }
 
 func (p *Post) PostsPages() int {
-	return p.lastPostId/5 + 1
+	return len(p.validPostIds)/5 + 1
+}
+
+func (p *Post) addValidPost(id int) {
+	p.validPostIds = append(p.validPostIds, id)
+	sort.Slice(p.validPostIds, func(i, j int) bool { return p.validPostIds[i] < p.validPostIds[j] })
+}
+
+func (p *Post) unValidPost(id int) {
+	filter := p.validPostIds[:0]
+
+	for i := 0; i < len(p.validPostIds); i++ {
+		if p.validPostIds[i] == id {
+			continue
+		}
+		filter = append(filter, p.validPostIds[i])
+	}
+
+	p.validPostIds = filter
+
+	sort.Slice(p.validPostIds, func(i, j int) bool { return p.validPostIds[i] < p.validPostIds[j] })
+}
+
+func (p *Post) Validate(id int, validity bool) error {
+	post, err := p.ReadPost(id)
+	if err != nil {
+		return err
+	}
+
+	post.IsApproved = validity
+
+	err = p.setPost(id, post)
+	if err != nil {
+		return err
+	}
+
+	if validity {
+		p.addValidPost(id)
+	} else {
+		p.unValidPost(id)
+	}
+
+	return err
+}
+
+func (p *Post) setPost(id int, post *types.Post) error {
+	f, err := os.OpenFile("db/posts/"+strconv.Itoa(id), os.O_RDWR, os.ModePerm)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	b, err := json.Marshal(post)
+	if err != nil {
+		return err
+	}
+
+	err = f.Truncate(int64(len(b)))
+	if err != nil {
+		return err
+	}
+
+	_, err = f.WriteAt(b, 0)
+	if err != nil {
+		return err
+	}
+
+	return err
 }

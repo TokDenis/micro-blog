@@ -39,6 +39,15 @@ func (t *Tokens) MakeToken(email string) (token string, err error) {
 	return token, err
 }
 
+func (t *Tokens) DeleteToken(token string) error {
+	err := os.Remove("db/tokens/" + token)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
 func (t *Tokens) EmailFromToken(token string) (email string, err error) {
 	b, err := os.ReadFile("db/tokens/" + token)
 	if err != nil {

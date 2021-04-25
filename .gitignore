@@ -1,2 +1,4 @@
 /.idea/
 /db/
+/www/
+/types/secrets.go

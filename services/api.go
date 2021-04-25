@@ -16,10 +16,11 @@ import (
 )
 
 type Api struct {
-	auth  *Auth
-	post  *Post
-	token *Tokens
-	stats *Stats
+	auth     *Auth
+	post     *Post
+	token    *Tokens
+	stats    *Stats
+	comments *Comments
 }
 
 const (
@@ -58,19 +59,25 @@ func NewApi() (*Api, error) {
 	}
 
 	api := Api{
-		auth:  NewAuth(),
-		post:  post,
-		token: NewTokens(),
-		stats: stats,
+		auth:     NewAuth(),
+		post:     post,
+		token:    NewTokens(),
+		stats:    stats,
+		comments: NewCommentsService(),
 	}
+	r.POST("/api/v1/adm/valid", api.AuthMiddleware(api.ValidatePost))
+
+	r.GET("/api/v1/comments", api.Comments)
+	r.POST("/api/v1/comments/new", api.AuthMiddleware(api.NewComment))
 
 	r.POST("/api/v1/auth/newuser", api.NewUser)
 	r.POST("/api/v1/auth/login", api.LoginUser)
+	r.POST("/api/v1/auth/logout", api.LoginUser)
 	r.GET("/api/v1/auth/userinfo", api.AuthMiddleware(api.UserInfo))
 
 	r.GET("/api/v1/post/pages", api.PostsPages)
 	r.GET("/api/v1/post/daytop", api.DayTopPosts)
-	r.GET("/api/v1/post/next", api.GetPosts)
+	//r.GET("/api/v1/post/next", api.GetPosts)
 	r.GET("/api/v1/post/last", api.LastPosts)
 	r.GET("/api/v1/post", api.OpenPost)
 	r.POST("/api/v1/post/new", api.AuthMiddleware(api.NewPost))
@@ -292,6 +299,11 @@ func (a *Api) OpenPost(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
 		return
 	}
 
+	if !post.IsValid() {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
 	b, err := json.Marshal(&post)
 	if err != nil {
 		a.internalErr(ctx, err)
@@ -330,16 +342,23 @@ func (a *Api) NewPost(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
 }
 
 func (a *Api) ReadStats(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
-	id, err := strconv.Atoi(string(ctx.QueryArgs().Peek("id")))
+	var ids []int
+
+	err := json.Unmarshal(ctx.QueryArgs().Peek("ids"), &ids)
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		return
 	}
 
-	stats, err := a.stats.ReadStats(id)
-	if err != nil {
-		a.internalErr(ctx, err)
-		return
+	var stats []*types.Stats
+
+	for _, id := range ids {
+		stat, err := a.stats.ReadStats(id)
+		if err != nil {
+			a.internalErr(ctx, err)
+			return
+		}
+		stats = append(stats, stat)
 	}
 
 	b, err := json.Marshal(&stats)
@@ -357,4 +376,93 @@ func (a *Api) PostsPages(ctx *fasthttp.RequestCtx, p fasthttprouter.Params) {
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	_, _ = ctx.Write([]byte(strconv.Itoa(count)))
+}
+
+func (a *Api) NewComment(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
+	var commentReq types.NewCommentReq
+
+	err := json.Unmarshal(ctx.PostBody(), &commentReq)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	email := ctx.UserValue("_email").(string)
+
+	a.comments.Consume(commentReq.PostId, types.Comment{
+		Id:        0,
+		UserName:  email,
+		Content:   commentReq.Content,
+		IsDeleted: false,
+		Created:   time.Now(),
+	})
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func (a *Api) Comments(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
+	id, err := strconv.Atoi(string(ctx.QueryArgs().Peek("id")))
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	comments, err := a.comments.GetComments(id)
+	if err != nil {
+		a.internalErr(ctx, err)
+		return
+	}
+
+	b, err := json.Marshal(comments)
+	if err != nil {
+		a.internalErr(ctx, err)
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	_, _ = ctx.Write(b)
+}
+
+func (a *Api) LogoutUser(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
+	ses := sessions.StartFasthttp(ctx)
+	token, ok := ses.Get(TokenKey).(string)
+	if !ok {
+		a.internalErr(ctx, errors.New("can not get TokenKey"))
+		return
+	}
+
+	err := a.token.DeleteToken(token)
+	if err != nil {
+		a.internalErr(ctx, err)
+		return
+	}
+
+	ok = ses.Delete(TokenKey)
+	if !ok {
+		a.internalErr(ctx, errors.New("can not delete TokenKey"))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func (a *Api) ValidatePost(ctx *fasthttp.RequestCtx, _ fasthttprouter.Params) {
+	if string(ctx.PostBody()) != types.AdminWord {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(string(ctx.QueryArgs().Peek("id")))
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	err = a.post.Validate(id, ctx.QueryArgs().GetBool("v"))
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
 }
